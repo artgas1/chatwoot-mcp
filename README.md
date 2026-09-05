@@ -10,13 +10,15 @@ A Model Context Protocol (MCP) server for [Chatwoot](https://www.chatwoot.com), 
 | | `get_conversation` | Get detailed conversation info |
 | | `filter_conversations` | Filter with advanced criteria |
 | | `get_conversation_counts` | Get counts by status |
-| | `get_messages` | Get all messages in a conversation |
+| | `get_messages` | Get messages in a conversation (latest 20, paginate with `before`/`after`) |
 | | `send_message` | Send outgoing, incoming, or private note |
 | | `delete_message` | Delete a message |
 | | `toggle_conversation_status` | Change status (open, resolved, pending, snoozed) |
 | | `toggle_conversation_priority` | Set priority (urgent, high, medium, low) |
 | | `assign_conversation` | Assign to agent and/or team |
 | | `update_conversation_labels` | Update conversation labels |
+| | `update_conversation` | Replace conversation custom attributes |
+| | `create_conversation` | Create a conversation for a contact in an inbox |
 | **Contacts** | `list_contacts` | List contacts with pagination |
 | | `get_contact` | Get contact details |
 | | `search_contacts` | Search by name, email, phone |
@@ -41,7 +43,7 @@ A Model Context Protocol (MCP) server for [Chatwoot](https://www.chatwoot.com), 
 | | `get_agent_summary` | Per-agent performance metrics |
 | | `get_team_summary` | Per-team performance metrics |
 | | `get_inbox_summary` | Per-inbox performance metrics |
-| | `get_channel_summary` | Per-channel type metrics |
+| | `get_channel_summary` | Conversation counts by status per channel type |
 | **Automation** | `list_canned_responses` | List saved reply templates |
 | | `create_canned_response` | Create a canned response |
 | | `delete_canned_response` | Delete a canned response |
@@ -62,7 +64,7 @@ A Model Context Protocol (MCP) server for [Chatwoot](https://www.chatwoot.com), 
 | | `delete_integration_hook` | Delete an integration hook |
 | **Help Center** | `list_portals` | List help center portals |
 | | `update_portal` | Update a portal |
-| | `list_articles` | List articles in a portal |
+| | `list_articles` | List articles in a portal (portals are addressed by `portal_slug`) |
 | | `create_article` | Create an article |
 | | `update_article` | Update an article |
 | | `delete_article` | Delete an article |
