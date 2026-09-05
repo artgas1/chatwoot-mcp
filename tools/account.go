@@ -32,11 +32,11 @@ type ListInboxMembersInput struct {
 type GetAccountInput struct{}
 
 type UpdateAccountInput struct {
-	Name            string `json:"name,omitempty"`
-	Locale          string `json:"locale,omitempty"`
-	Domain          string `json:"domain,omitempty"`
-	SupportEmail    string `json:"support_email,omitempty"`
-	AutoResolveDays *int   `json:"auto_resolve_duration,omitempty"`
+	Name             string `json:"name,omitempty"`
+	Locale           string `json:"locale,omitempty"`
+	Domain           string `json:"domain,omitempty"`
+	SupportEmail     string `json:"support_email,omitempty"`
+	AutoResolveAfter *int   `json:"auto_resolve_after,omitempty"`
 }
 
 // RegisterAccountTools registers inbox, agent, team, label, and profile tools.
@@ -224,14 +224,21 @@ func RegisterAccountTools(server *mcp.Server, client *chatwoot.Client) {
 		if account.SupportEmail != "" {
 			sb.WriteString(fmt.Sprintf("Support email: %s\n", account.SupportEmail))
 		}
-		sb.WriteString(fmt.Sprintf("Auto-resolve after: %d days\n", account.AutoResolveDays))
+		if account.Status != "" {
+			sb.WriteString(fmt.Sprintf("Status: %s\n", account.Status))
+		}
+		if v, ok := account.Settings["auto_resolve_after"]; ok && v != nil {
+			sb.WriteString(fmt.Sprintf("Auto-resolve after: %v minutes\n", v))
+		} else {
+			sb.WriteString("Auto-resolve: disabled\n")
+		}
 		return textResult(sb.String()), nil, nil
 	})
 
 	// --- update_account ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "update_account",
-		Description: "Update the current account's name, locale, domain, support email, or auto-resolve duration. Provide only the fields you want to change.",
+		Description: "Update the current account's name, locale, domain, support email, or auto_resolve_after (minutes of inactivity before a conversation auto-resolves). Provide only the fields you want to change.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input UpdateAccountInput) (*mcp.CallToolResult, any, error) {
 		updateReq := chatwoot.UpdateAccountRequest{}
 		if input.Name != "" {
@@ -246,8 +253,8 @@ func RegisterAccountTools(server *mcp.Server, client *chatwoot.Client) {
 		if input.SupportEmail != "" {
 			updateReq.SupportEmail = &input.SupportEmail
 		}
-		if input.AutoResolveDays != nil {
-			updateReq.AutoResolveDays = input.AutoResolveDays
+		if input.AutoResolveAfter != nil {
+			updateReq.AutoResolveAfter = input.AutoResolveAfter
 		}
 		account, err := client.UpdateAccount(ctx, updateReq)
 		if err != nil {

@@ -107,7 +107,7 @@ func RegisterAutomationTools(server *mcp.Server, client *chatwoot.Client) {
 		var sb strings.Builder
 		for _, a := range attrs {
 			model := "conversation"
-			if a.AttributeModel == 1 {
+			if a.AttributeModel.IsContact() {
 				model = "contact"
 			}
 			sb.WriteString(fmt.Sprintf("- [%d] %s (%s, %s) — key: %s — %s\n",
@@ -179,7 +179,11 @@ func RegisterAutomationTools(server *mcp.Server, client *chatwoot.Client) {
 		}
 		var sb strings.Builder
 		for _, w := range webhooks {
-			sb.WriteString(fmt.Sprintf("- [%d] %s — events: %s\n", w.ID, w.URL, strings.Join(w.Subscriptions, ", ")))
+			name := ""
+			if w.Name != "" {
+				name = " " + w.Name
+			}
+			sb.WriteString(fmt.Sprintf("- [%d]%s %s — events: %s\n", w.ID, name, w.URL, strings.Join(w.Subscriptions, ", ")))
 		}
 		if sb.Len() == 0 {
 			sb.WriteString("No webhooks configured.")

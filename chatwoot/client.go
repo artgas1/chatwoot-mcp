@@ -182,7 +182,8 @@ func (c *Client) GetConversationMeta(ctx context.Context) (*ConversationMetaResp
 	return &resp, nil
 }
 
-// UpdateConversation updates a conversation's custom attributes.
+// UpdateConversation updates a conversation via PATCH /conversations/{id}.
+// Chatwoot only permits `priority` here; use UpdateConversationCustomAttributes for custom attributes.
 func (c *Client) UpdateConversation(ctx context.Context, conversationID int, req UpdateConversationRequest) (*Conversation, error) {
 	var conv Conversation
 	path := c.accountPath(fmt.Sprintf("/conversations/%d", conversationID))
@@ -192,10 +193,26 @@ func (c *Client) UpdateConversation(ctx context.Context, conversationID int, req
 	return &conv, nil
 }
 
-// TogglePriority sets the priority of a conversation.
+// UpdateConversationCustomAttributes replaces a conversation's custom attributes
+// via POST /conversations/{id}/custom_attributes and returns the stored attributes.
+func (c *Client) UpdateConversationCustomAttributes(ctx context.Context, conversationID int, attrs map[string]any) (map[string]any, error) {
+	var resp ConversationCustomAttributesResponse
+	path := c.accountPath(fmt.Sprintf("/conversations/%d/custom_attributes", conversationID))
+	payload := ConversationCustomAttributesRequest{CustomAttributes: attrs}
+	if err := c.do(ctx, http.MethodPost, path, payload, &resp); err != nil {
+		return nil, err
+	}
+	return resp.CustomAttributes, nil
+}
+
+// TogglePriority sets the priority of a conversation. An empty string or "none"
+// clears the priority (Chatwoot expects null, not the string "none").
 func (c *Client) TogglePriority(ctx context.Context, conversationID int, priority string) error {
 	path := c.accountPath(fmt.Sprintf("/conversations/%d/toggle_priority", conversationID))
-	payload := TogglePriorityRequest{Priority: priority}
+	payload := TogglePriorityRequest{}
+	if priority != "" && priority != "none" {
+		payload.Priority = &priority
+	}
 	return c.do(ctx, http.MethodPost, path, payload, nil)
 }
 
@@ -207,9 +224,27 @@ func (c *Client) ToggleStatus(ctx context.Context, conversationID int, status st
 }
 
 // AssignConversation assigns a conversation to an agent and/or team.
+//
+// Chatwoot's assignments endpoint applies only one change per request and
+// prefers assignee_id whenever that key is present (even as null), so the agent
+// and team are sent as separate requests containing only their own key. When
+// neither is provided the agent is unassigned (assignee_id: null).
 func (c *Client) AssignConversation(ctx context.Context, conversationID int, req AssignConversationRequest) error {
 	path := c.accountPath(fmt.Sprintf("/conversations/%d/assignments", conversationID))
-	return c.do(ctx, http.MethodPost, path, req, nil)
+	if req.AssigneeID == nil && req.TeamID == nil {
+		return c.do(ctx, http.MethodPost, path, map[string]any{"assignee_id": nil}, nil)
+	}
+	if req.AssigneeID != nil {
+		if err := c.do(ctx, http.MethodPost, path, map[string]any{"assignee_id": *req.AssigneeID}, nil); err != nil {
+			return err
+		}
+	}
+	if req.TeamID != nil {
+		if err := c.do(ctx, http.MethodPost, path, map[string]any{"team_id": *req.TeamID}, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UpdateConversationLabels updates labels on a conversation.
@@ -235,10 +270,25 @@ func (c *Client) GetConversationLabels(ctx context.Context, conversationID int) 
 // Messages
 // ---------------------------------------------------------------------------
 
-// GetMessages returns messages for a conversation.
-func (c *Client) GetMessages(ctx context.Context, conversationID int) ([]Message, error) {
+// GetMessages returns messages for a conversation in chronological order.
+//
+// Chatwoot pages by message ID: with no cursor it returns the latest 20
+// messages; before=<id> returns the 20 messages older than that ID; after=<id>
+// returns up to 100 messages newer than that ID; both together return the
+// messages in between (up to 1000).
+func (c *Client) GetMessages(ctx context.Context, conversationID int, before, after int) ([]Message, error) {
+	params := url.Values{}
+	if before > 0 {
+		params.Set("before", strconv.Itoa(before))
+	}
+	if after > 0 {
+		params.Set("after", strconv.Itoa(after))
+	}
 	var resp MessageListResponse
 	path := c.accountPath(fmt.Sprintf("/conversations/%d/messages", conversationID))
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
 	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err
 	}
@@ -359,16 +409,15 @@ func (c *Client) GetContactConversations(ctx context.Context, contactID int) (*C
 	return &resp, nil
 }
 
-// MergeContacts merges two contacts together.
+// MergeContacts merges two contacts together and returns the base contact.
+// Unlike most contact endpoints, the response is the bare contact object (no "payload" wrapper).
 func (c *Client) MergeContacts(ctx context.Context, req MergeContactsRequest) (*Contact, error) {
-	var resp struct {
-		Payload Contact `json:"payload"`
-	}
+	var contact Contact
 	path := c.accountPath("/actions/contact_merge")
-	if err := c.do(ctx, http.MethodPost, path, req, &resp); err != nil {
+	if err := c.do(ctx, http.MethodPost, path, req, &contact); err != nil {
 		return nil, err
 	}
-	return &resp.Payload, nil
+	return &contact, nil
 }
 
 // GetContactLabels returns labels for a contact.
@@ -628,21 +677,21 @@ func (c *Client) ListCustomFilters(ctx context.Context, filterType string) ([]Cu
 	return filters, nil
 }
 
-// CreateCustomFilter creates a new custom filter.
+// CreateCustomFilter creates a new custom filter. The request is wrapped as {"custom_filter": ...}.
 func (c *Client) CreateCustomFilter(ctx context.Context, req CreateCustomFilterRequest) (*CustomFilter, error) {
 	var filter CustomFilter
 	path := c.accountPath("/custom_filters")
-	if err := c.do(ctx, http.MethodPost, path, req, &filter); err != nil {
+	if err := c.do(ctx, http.MethodPost, path, map[string]any{"custom_filter": req}, &filter); err != nil {
 		return nil, err
 	}
 	return &filter, nil
 }
 
-// UpdateCustomFilter updates a custom filter by ID.
+// UpdateCustomFilter updates a custom filter by ID. The request is wrapped as {"custom_filter": ...}.
 func (c *Client) UpdateCustomFilter(ctx context.Context, id int, req CreateCustomFilterRequest) (*CustomFilter, error) {
 	var filter CustomFilter
 	path := c.accountPath(fmt.Sprintf("/custom_filters/%d", id))
-	if err := c.do(ctx, http.MethodPatch, path, req, &filter); err != nil {
+	if err := c.do(ctx, http.MethodPatch, path, map[string]any{"custom_filter": req}, &filter); err != nil {
 		return nil, err
 	}
 	return &filter, nil
@@ -701,35 +750,35 @@ func (c *Client) DeleteAutomationRule(ctx context.Context, id int) error {
 // ---------------------------------------------------------------------------
 
 // ListWebhooks returns all webhooks for the account.
+// The response is {"payload": {"webhooks": [...]}}.
 func (c *Client) ListWebhooks(ctx context.Context) ([]Webhook, error) {
-	var resp struct {
-		Payload []Webhook `json:"payload"`
-	}
+	var resp WebhookListResponse
 	path := c.accountPath("/webhooks")
 	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err
 	}
-	return resp.Payload, nil
+	return resp.Payload.Webhooks, nil
 }
 
-// CreateWebhook creates a new webhook.
+// CreateWebhook creates a new webhook. The request is wrapped as {"webhook": ...}
+// and the response is {"payload": {"webhook": {...}}}.
 func (c *Client) CreateWebhook(ctx context.Context, req CreateWebhookRequest) (*Webhook, error) {
-	var webhook Webhook
+	var resp WebhookResponse
 	path := c.accountPath("/webhooks")
-	if err := c.do(ctx, http.MethodPost, path, req, &webhook); err != nil {
+	if err := c.do(ctx, http.MethodPost, path, map[string]any{"webhook": req}, &resp); err != nil {
 		return nil, err
 	}
-	return &webhook, nil
+	return &resp.Payload.Webhook, nil
 }
 
 // UpdateWebhook updates a webhook by ID.
 func (c *Client) UpdateWebhook(ctx context.Context, id int, req UpdateWebhookRequest) (*Webhook, error) {
-	var webhook Webhook
+	var resp WebhookResponse
 	path := c.accountPath(fmt.Sprintf("/webhooks/%d", id))
-	if err := c.do(ctx, http.MethodPatch, path, req, &webhook); err != nil {
+	if err := c.do(ctx, http.MethodPatch, path, map[string]any{"webhook": req}, &resp); err != nil {
 		return nil, err
 	}
-	return &webhook, nil
+	return &resp.Payload.Webhook, nil
 }
 
 // DeleteWebhook deletes a webhook by ID.
@@ -798,23 +847,17 @@ func (c *Client) GetInboxSummary(ctx context.Context, since, until int64) ([]Sum
 	return inboxes, nil
 }
 
-// GetChannelSummary returns per-channel report metrics for the given time range.
-func (c *Client) GetChannelSummary(ctx context.Context, since, until int64) ([]ChannelSummary, error) {
+// GetChannelSummary returns conversation counts by status, keyed by channel type
+// (e.g. "Channel::Email"), for conversations created in the given time range.
+// Chatwoot rejects ranges longer than 6 months.
+func (c *Client) GetChannelSummary(ctx context.Context, since, until int64) (map[string]ChannelSummary, error) {
 	params := url.Values{}
 	params.Set("since", strconv.FormatInt(since, 10))
 	params.Set("until", strconv.FormatInt(until, 10))
-	var raw json.RawMessage
+	var channels map[string]ChannelSummary
 	path := c.accountPathV2("/summary_reports/channel") + "?" + params.Encode()
-	if err := c.do(ctx, http.MethodGet, path, nil, &raw); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, &channels); err != nil {
 		return nil, err
-	}
-	// API may return {} (empty object) or [] (array)
-	if len(raw) == 0 || string(raw) == "{}" || string(raw) == "null" {
-		return nil, nil
-	}
-	var channels []ChannelSummary
-	if err := json.Unmarshal(raw, &channels); err != nil {
-		return nil, nil
 	}
 	return channels, nil
 }
@@ -1018,89 +1061,91 @@ func (c *Client) ListPortals(ctx context.Context) ([]Portal, error) {
 	return resp.Payload, nil
 }
 
-// ListArticles returns articles for a given portal.
-func (c *Client) ListArticles(ctx context.Context, portalID int) ([]Article, error) {
+// portalPath builds a help-center path. Chatwoot identifies portals by slug,
+// not numeric ID, in every /portals/... route.
+func (c *Client) portalPath(portalSlug, suffix string) string {
+	return c.accountPath("/portals/" + url.PathEscape(portalSlug) + suffix)
+}
+
+// ListArticles returns articles for a given portal (identified by slug).
+func (c *Client) ListArticles(ctx context.Context, portalSlug string) ([]Article, error) {
 	var resp struct {
 		Payload []Article `json:"payload"`
 	}
-	path := c.accountPath(fmt.Sprintf("/portals/%d/articles", portalID))
-	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, c.portalPath(portalSlug, "/articles"), nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Payload, nil
 }
 
-// CreateArticle creates a new article in a portal.
-func (c *Client) CreateArticle(ctx context.Context, portalID int, req CreateArticleRequest) (*Article, error) {
-	var article Article
-	path := c.accountPath(fmt.Sprintf("/portals/%d/articles", portalID))
-	if err := c.do(ctx, http.MethodPost, path, req, &article); err != nil {
+// CreateArticle creates a new article in a portal. The request is wrapped as {"article": ...}.
+func (c *Client) CreateArticle(ctx context.Context, portalSlug string, req CreateArticleRequest) (*Article, error) {
+	var resp ArticleResponse
+	if err := c.do(ctx, http.MethodPost, c.portalPath(portalSlug, "/articles"), map[string]any{"article": req}, &resp); err != nil {
 		return nil, err
 	}
-	return &article, nil
+	return &resp.Payload, nil
 }
 
-// UpdateArticle updates an article in a portal.
-func (c *Client) UpdateArticle(ctx context.Context, portalID, articleID int, req UpdateArticleRequest) (*Article, error) {
-	var article Article
-	path := c.accountPath(fmt.Sprintf("/portals/%d/articles/%d", portalID, articleID))
-	if err := c.do(ctx, http.MethodPut, path, req, &article); err != nil {
+// UpdateArticle updates an article in a portal. The request is wrapped as {"article": ...}.
+func (c *Client) UpdateArticle(ctx context.Context, portalSlug string, articleID int, req UpdateArticleRequest) (*Article, error) {
+	var resp ArticleResponse
+	path := c.portalPath(portalSlug, fmt.Sprintf("/articles/%d", articleID))
+	if err := c.do(ctx, http.MethodPatch, path, map[string]any{"article": req}, &resp); err != nil {
 		return nil, err
 	}
-	return &article, nil
+	return &resp.Payload, nil
 }
 
 // DeleteArticle deletes an article from a portal.
-func (c *Client) DeleteArticle(ctx context.Context, portalID, articleID int) error {
-	path := c.accountPath(fmt.Sprintf("/portals/%d/articles/%d", portalID, articleID))
+func (c *Client) DeleteArticle(ctx context.Context, portalSlug string, articleID int) error {
+	path := c.portalPath(portalSlug, fmt.Sprintf("/articles/%d", articleID))
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
 }
 
-// UpdatePortal updates a portal.
-func (c *Client) UpdatePortal(ctx context.Context, portalID int, req UpdatePortalRequest) (*Portal, error) {
+// UpdatePortal updates a portal (identified by its current slug).
+// The request is wrapped as {"portal": ...}; the response is the bare portal object.
+func (c *Client) UpdatePortal(ctx context.Context, portalSlug string, req UpdatePortalRequest) (*Portal, error) {
 	var portal Portal
-	path := c.accountPath(fmt.Sprintf("/portals/%d", portalID))
-	if err := c.do(ctx, http.MethodPatch, path, req, &portal); err != nil {
+	if err := c.do(ctx, http.MethodPatch, c.portalPath(portalSlug, ""), map[string]any{"portal": req}, &portal); err != nil {
 		return nil, err
 	}
 	return &portal, nil
 }
 
-// ListCategories returns categories for a portal.
-func (c *Client) ListCategories(ctx context.Context, portalID int) ([]Category, error) {
+// ListCategories returns categories for a portal (identified by slug).
+func (c *Client) ListCategories(ctx context.Context, portalSlug string) ([]Category, error) {
 	var resp struct {
 		Payload []Category `json:"payload"`
 	}
-	path := c.accountPath(fmt.Sprintf("/portals/%d/categories", portalID))
-	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, c.portalPath(portalSlug, "/categories"), nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Payload, nil
 }
 
-// CreateCategory creates a new category in a portal.
-func (c *Client) CreateCategory(ctx context.Context, portalID int, req CreateCategoryRequest) (*Category, error) {
-	var category Category
-	path := c.accountPath(fmt.Sprintf("/portals/%d/categories", portalID))
-	if err := c.do(ctx, http.MethodPost, path, req, &category); err != nil {
+// CreateCategory creates a new category in a portal. The request is wrapped as {"category": ...}.
+func (c *Client) CreateCategory(ctx context.Context, portalSlug string, req CreateCategoryRequest) (*Category, error) {
+	var resp CategoryResponse
+	if err := c.do(ctx, http.MethodPost, c.portalPath(portalSlug, "/categories"), map[string]any{"category": req}, &resp); err != nil {
 		return nil, err
 	}
-	return &category, nil
+	return &resp.Payload, nil
 }
 
-// UpdateCategory updates a category in a portal.
-func (c *Client) UpdateCategory(ctx context.Context, portalID, categoryID int, req UpdateCategoryRequest) (*Category, error) {
-	var category Category
-	path := c.accountPath(fmt.Sprintf("/portals/%d/categories/%d", portalID, categoryID))
-	if err := c.do(ctx, http.MethodPatch, path, req, &category); err != nil {
+// UpdateCategory updates a category in a portal. The request is wrapped as {"category": ...}.
+func (c *Client) UpdateCategory(ctx context.Context, portalSlug string, categoryID int, req UpdateCategoryRequest) (*Category, error) {
+	var resp CategoryResponse
+	path := c.portalPath(portalSlug, fmt.Sprintf("/categories/%d", categoryID))
+	if err := c.do(ctx, http.MethodPatch, path, map[string]any{"category": req}, &resp); err != nil {
 		return nil, err
 	}
-	return &category, nil
+	return &resp.Payload, nil
 }
 
 // DeleteCategory deletes a category from a portal.
-func (c *Client) DeleteCategory(ctx context.Context, portalID, categoryID int) error {
-	path := c.accountPath(fmt.Sprintf("/portals/%d/categories/%d", portalID, categoryID))
+func (c *Client) DeleteCategory(ctx context.Context, portalSlug string, categoryID int) error {
+	path := c.portalPath(portalSlug, fmt.Sprintf("/categories/%d", categoryID))
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
 }
 

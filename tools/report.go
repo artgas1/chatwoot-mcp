@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,11 +38,27 @@ type GetChannelSummaryInput struct {
 	Until string `json:"until,omitempty"`
 }
 
-func fmtMetric(v *string) string {
-	if v == nil || *v == "" {
+// fmtMetric renders a Chatwoot average metric (seconds, or nil when no data) as a duration.
+func fmtMetric(v *float64) string {
+	if v == nil {
 		return "N/A"
 	}
-	return *v
+	return fmtDuration(*v)
+}
+
+// fmtDuration renders seconds as a compact human-readable duration.
+func fmtDuration(seconds float64) string {
+	d := time.Duration(seconds * float64(time.Second)).Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
 }
 
 func formatSummaryEntry(sb *strings.Builder, label string, e chatwoot.SummaryReportEntry) {
@@ -72,9 +89,13 @@ func RegisterReportTools(server *mcp.Server, client *chatwoot.Client) {
 		sb.WriteString(fmt.Sprintf("Outgoing messages: %d\n", summary.OutgoingMessagesCount))
 		sb.WriteString(fmt.Sprintf("Avg first response time: %s\n", fmtMetric(summary.AvgFirstResponseTime)))
 		sb.WriteString(fmt.Sprintf("Avg resolution time: %s\n", fmtMetric(summary.AvgResolutionTime)))
+		sb.WriteString(fmt.Sprintf("Avg reply time: %s\n", fmtMetric(summary.AvgReplyTime)))
 		if summary.Previous != nil {
-			sb.WriteString(fmt.Sprintf("\nPrevious period: %d conversations, %d resolutions\n",
-				summary.Previous.ConversationsCount, summary.Previous.ResolutionsCount))
+			p := summary.Previous
+			sb.WriteString(fmt.Sprintf("\nPrevious period (same length): %d conversations, %d resolutions, %d incoming / %d outgoing messages\n",
+				p.ConversationsCount, p.ResolutionsCount, p.IncomingMessagesCount, p.OutgoingMessagesCount))
+			sb.WriteString(fmt.Sprintf("  Avg first response: %s, Avg resolution: %s, Avg reply: %s\n",
+				fmtMetric(p.AvgFirstResponseTime), fmtMetric(p.AvgResolutionTime), fmtMetric(p.AvgReplyTime)))
 		}
 		return textResult(sb.String()), nil, nil
 	})
@@ -178,22 +199,27 @@ func RegisterReportTools(server *mcp.Server, client *chatwoot.Client) {
 	// --- get_channel_summary ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_channel_summary",
-		Description: "Get per-channel performance metrics grouped by channel type (email, web, api, etc.). Provide since/until as dates (YYYY-MM-DD). Defaults to last 7 days.",
+		Description: "Get conversation counts by status (open/resolved/pending/snoozed/total) grouped by channel type (Channel::Email, Channel::WebWidget, Channel::Api, ...) for conversations created in the period. Provide since/until as dates (YYYY-MM-DD, max 6 months apart). Defaults to last 7 days.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetChannelSummaryInput) (*mcp.CallToolResult, any, error) {
 		since, until := parseDateRange(input.Since, input.Until)
 		channels, err := client.GetChannelSummary(ctx, since, until)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
+		names := make([]string, 0, len(channels))
+		for name := range channels {
+			names = append(names, name)
+		}
+		sort.Strings(names)
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("Channel Summary (%s to %s)\n\n", time.Unix(since, 0).Format("2006-01-02"), time.Unix(until, 0).Format("2006-01-02")))
-		for _, ch := range channels {
-			sb.WriteString(fmt.Sprintf("- %s\n", ch.ChannelType))
-			sb.WriteString(fmt.Sprintf("    Conversations: %d, Resolved: %d\n", ch.ConversationsCount, ch.ResolvedConversationsCount))
-			sb.WriteString(fmt.Sprintf("    Avg FRT: %s, Avg Resolution: %s\n", fmtMetric(ch.AvgFirstResponseTime), fmtMetric(ch.AvgResolutionTime)))
+		for _, name := range names {
+			ch := channels[name]
+			sb.WriteString(fmt.Sprintf("- %s: total %d (open: %d, resolved: %d, pending: %d, snoozed: %d)\n",
+				name, ch.Total, ch.Open, ch.Resolved, ch.Pending, ch.Snoozed))
 		}
 		if len(channels) == 0 {
-			sb.WriteString("No channel data available.")
+			sb.WriteString("No conversations were created in this period.")
 		}
 		return textResult(sb.String()), nil, nil
 	})

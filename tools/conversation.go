@@ -57,6 +57,8 @@ type UpdateConversationInput struct {
 
 type GetMessagesInput struct {
 	ConversationID int `json:"conversation_id"`
+	Before         int `json:"before,omitempty"`
+	After          int `json:"after,omitempty"`
 }
 
 type SendMessageInput struct {
@@ -98,26 +100,20 @@ func RegisterConversationTools(server *mcp.Server, client *chatwoot.Client) {
 	// --- list_conversations ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_conversations",
-		Description: "List conversations in Chatwoot. Filters: status (open/resolved/pending/snoozed/all), assignee_type (me/assigned/unassigned/all), q (search messages), inbox_id, team_id, labels (array of label names).",
+		Description: "List conversations in Chatwoot (25 per page, default status=open). Filters: status (open/resolved/pending/snoozed/all), assignee_type (me/assigned/unassigned/all), q (full-text search over message content; note Chatwoot ignores the status filter when q is set), inbox_id, team_id, labels (array of label names), page.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input ListConversationsInput) (*mcp.CallToolResult, any, error) {
 		resp, err := client.ListConversations(ctx, input.Status, input.AssigneeType, input.Q, input.InboxID, input.TeamID, input.Labels, input.Page)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
+		page := input.Page
+		if page < 1 {
+			page = 1
+		}
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Total: %d conversations (page %d)\n\n", resp.Data.Meta.AllCount, resp.Data.Meta.Page))
+		sb.WriteString(fmt.Sprintf("Page %d: %d shown of %d matching conversations\n\n", page, len(resp.Data.Payload), resp.Data.Meta.AllCount))
 		for _, conv := range resp.Data.Payload {
-			assignee := "(unassigned)"
-			if conv.Meta.Assignee != nil {
-				assignee = conv.Meta.Assignee.Name
-			}
-			labels := ""
-			if len(conv.Labels) > 0 {
-				labels = " [" + strings.Join(conv.Labels, ", ") + "]"
-			}
-			sb.WriteString(fmt.Sprintf("- #%d [%s] %s → %s%s (msgs: %d, unread: %d)\n",
-				conv.ID, conv.Status, conv.Meta.Sender.Name, assignee, labels,
-				len(conv.Messages), conv.UnreadCount))
+			sb.WriteString(formatConversationLine(conv))
 		}
 		if len(resp.Data.Payload) == 0 {
 			sb.WriteString("No conversations found.")
@@ -144,13 +140,16 @@ func RegisterConversationTools(server *mcp.Server, client *chatwoot.Client) {
 		} else {
 			sb.WriteString("Assignee: (unassigned)\n")
 		}
+		if conv.Meta.Team != nil {
+			sb.WriteString(fmt.Sprintf("Team: %s (ID: %d)\n", conv.Meta.Team.Name, conv.Meta.Team.ID))
+		}
 		if conv.Priority != nil {
 			sb.WriteString(fmt.Sprintf("Priority: %s\n", *conv.Priority))
 		}
 		if len(conv.Labels) > 0 {
 			sb.WriteString(fmt.Sprintf("Labels: %s\n", strings.Join(conv.Labels, ", ")))
 		}
-		sb.WriteString(fmt.Sprintf("Messages: %d (unread: %d)\n", len(conv.Messages), conv.UnreadCount))
+		sb.WriteString(fmt.Sprintf("Unread messages: %d (use get_messages for the message list)\n", conv.UnreadCount))
 		if conv.CreatedAt.Valid {
 			sb.WriteString(fmt.Sprintf("Created: %s\n", conv.CreatedAt.Format(time.RFC3339)))
 		}
@@ -230,14 +229,9 @@ func RegisterConversationTools(server *mcp.Server, client *chatwoot.Client) {
 			return errorResult(err), nil, nil
 		}
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Filter results: %d conversations\n\n", len(resp.Payload)))
+		sb.WriteString(fmt.Sprintf("Filter results: %d matching conversations, %d shown on this page\n\n", resp.Meta.AllCount, len(resp.Payload)))
 		for _, conv := range resp.Payload {
-			assignee := "(unassigned)"
-			if conv.Meta.Assignee != nil {
-				assignee = conv.Meta.Assignee.Name
-			}
-			sb.WriteString(fmt.Sprintf("- #%d [%s] %s → %s (msgs: %d)\n",
-				conv.ID, conv.Status, conv.Meta.Sender.Name, assignee, len(conv.Messages)))
+			sb.WriteString(formatConversationLine(conv))
 		}
 		if len(resp.Payload) == 0 {
 			sb.WriteString("No conversations match the filter.")
@@ -266,34 +260,43 @@ func RegisterConversationTools(server *mcp.Server, client *chatwoot.Client) {
 	// --- update_conversation ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "update_conversation",
-		Description: "Update conversation custom attributes.",
+		Description: "Replace a conversation's custom attributes. Provide the full map of custom_attributes to store (keys not included are removed).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input UpdateConversationInput) (*mcp.CallToolResult, any, error) {
-		if _, err := client.UpdateConversation(ctx, input.ConversationID, chatwoot.UpdateConversationRequest{
-			CustomAttributes: input.CustomAttributes,
-		}); err != nil {
+		if input.CustomAttributes == nil {
+			return errorResult(fmt.Errorf("custom_attributes is required")), nil, nil
+		}
+		attrs, err := client.UpdateConversationCustomAttributes(ctx, input.ConversationID, input.CustomAttributes)
+		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		return textResult(fmt.Sprintf("Conversation #%d updated!", input.ConversationID)), nil, nil
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Conversation #%d custom attributes updated:\n", input.ConversationID))
+		for k, v := range attrs {
+			sb.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
+		}
+		if len(attrs) == 0 {
+			sb.WriteString("  (none)\n")
+		}
+		return textResult(sb.String()), nil, nil
 	})
 
 	// --- get_messages ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_messages",
-		Description: "Get all messages in a conversation. Returns message content, sender, type, and timestamps.",
+		Description: "Get messages in a conversation, oldest first. Without a cursor Chatwoot returns only the latest 20 messages. To page backwards pass before=<oldest message id shown>; to fetch newer messages pass after=<message id> (up to 100). Returns id, timestamp, sender, type, attachments and content.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetMessagesInput) (*mcp.CallToolResult, any, error) {
-		messages, err := client.GetMessages(ctx, input.ConversationID)
+		messages, err := client.GetMessages(ctx, input.ConversationID, input.Before, input.After)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Messages in conversation #%d (%d total):\n\n", input.ConversationID, len(messages)))
+		sb.WriteString(fmt.Sprintf("Messages in conversation #%d (%d returned", input.ConversationID, len(messages)))
+		if input.Before == 0 && input.After == 0 {
+			sb.WriteString("; latest 20 max, pass before=<message id> for older ones")
+		}
+		sb.WriteString("):\n\n")
 
-		maxMessages := 50
-		for i, msg := range messages {
-			if i >= maxMessages {
-				sb.WriteString(fmt.Sprintf("\n... (%d more messages truncated)", len(messages)-maxMessages))
-				break
-			}
+		for _, msg := range messages {
 			msgType := messageTypeName(msg.MessageType)
 			senderName := "(system)"
 			if msg.Sender != nil {
@@ -308,7 +311,17 @@ func RegisterConversationTools(server *mcp.Server, client *chatwoot.Client) {
 				private = " [private]"
 			}
 			ts := time.Unix(msg.CreatedAt, 0).Format("2006-01-02 15:04")
-			sb.WriteString(fmt.Sprintf("[%s] %s (%s)%s: %s\n", ts, senderName, msgType, private, content))
+			sb.WriteString(fmt.Sprintf("[%s] (id %d) %s (%s)%s: %s\n", ts, msg.ID, senderName, msgType, private, content))
+			for _, att := range msg.Attachments {
+				label := att.FileType
+				if att.FallbackTitle != "" {
+					label += " " + att.FallbackTitle
+				}
+				if att.DataURL != "" {
+					label += " " + att.DataURL
+				}
+				sb.WriteString(fmt.Sprintf("    [attachment: %s]\n", label))
+			}
 		}
 		if len(messages) == 0 {
 			sb.WriteString("No messages found.")
@@ -361,10 +374,13 @@ func RegisterConversationTools(server *mcp.Server, client *chatwoot.Client) {
 	// --- toggle_conversation_priority ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "toggle_conversation_priority",
-		Description: "Set the priority of a conversation. Valid priorities: urgent, high, medium, low, none.",
+		Description: "Set the priority of a conversation. Valid priorities: urgent, high, medium, low. Pass 'none' to clear the priority.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input TogglePriorityInput) (*mcp.CallToolResult, any, error) {
 		if err := client.TogglePriority(ctx, input.ConversationID, input.Priority); err != nil {
 			return errorResult(err), nil, nil
+		}
+		if input.Priority == "" || input.Priority == "none" {
+			return textResult(fmt.Sprintf("Conversation #%d priority cleared.", input.ConversationID)), nil, nil
 		}
 		return textResult(fmt.Sprintf("Conversation #%d priority set to '%s'!", input.ConversationID, input.Priority)), nil, nil
 	})
@@ -372,7 +388,7 @@ func RegisterConversationTools(server *mcp.Server, client *chatwoot.Client) {
 	// --- assign_conversation ---
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "assign_conversation",
-		Description: "Assign a conversation to an agent and/or team. Set assignee_id to null to unassign.",
+		Description: "Assign a conversation to an agent (assignee_id) and/or a team (team_id). Providing only team_id leaves the current agent untouched. Call with neither to unassign the agent.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input AssignConversationInput) (*mcp.CallToolResult, any, error) {
 		if err := client.AssignConversation(ctx, input.ConversationID, chatwoot.AssignConversationRequest{
 			AssigneeID: input.AssigneeID,
@@ -400,6 +416,24 @@ func RegisterConversationTools(server *mcp.Server, client *chatwoot.Client) {
 		}
 		return textResult(fmt.Sprintf("Conversation #%d labels updated to: %s", input.ConversationID, strings.Join(input.Labels, ", "))), nil, nil
 	})
+}
+
+// formatConversationLine renders one conversation as a list entry.
+func formatConversationLine(conv chatwoot.Conversation) string {
+	assignee := "(unassigned)"
+	if conv.Meta.Assignee != nil {
+		assignee = conv.Meta.Assignee.Name
+	}
+	labels := ""
+	if len(conv.Labels) > 0 {
+		labels = " [" + strings.Join(conv.Labels, ", ") + "]"
+	}
+	priority := ""
+	if conv.Priority != nil && *conv.Priority != "" {
+		priority = " !" + *conv.Priority
+	}
+	return fmt.Sprintf("- #%d [%s]%s %s → %s%s (unread: %d)\n",
+		conv.ID, conv.Status, priority, conv.Meta.Sender.Name, assignee, labels, conv.UnreadCount)
 }
 
 func messageTypeName(t int) string {

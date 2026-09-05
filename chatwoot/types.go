@@ -85,10 +85,17 @@ type Conversation struct {
 	WaitingSince         *FlexTime        `json:"waiting_since"`
 }
 
-// ConversationMeta holds sender and assignee info.
+// ConversationMeta holds sender, assignee and team info.
 type ConversationMeta struct {
 	Sender   MetaContact `json:"sender"`
 	Assignee *MetaAgent  `json:"assignee"`
+	Team     *MetaTeam   `json:"team"`
+}
+
+// MetaTeam is a lightweight team reference.
+type MetaTeam struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
 }
 
 // MetaContact is a lightweight contact reference.
@@ -144,22 +151,22 @@ func (fi *FlexInt) UnmarshalJSON(data []byte) error {
 
 // PaginationMeta holds pagination info.
 type PaginationMeta struct {
-	AllCount  FlexInt `json:"all_count"`
-	Count     FlexInt `json:"count"`
-	Page      FlexInt `json:"page"`
+	AllCount    FlexInt `json:"all_count"`
+	Count       FlexInt `json:"count"`
+	Page        FlexInt `json:"page"`
 	CurrentPage FlexInt `json:"current_page"`
-	TotalPage FlexInt `json:"total_pages"`
+	TotalPage   FlexInt `json:"total_pages"`
 }
 
 // CreateConversationRequest is the payload for creating a new conversation.
 type CreateConversationRequest struct {
-	SourceID   *string          `json:"source_id,omitempty"`
-	InboxID    int              `json:"inbox_id"`
-	ContactID  int              `json:"contact_id"`
+	SourceID   *string                     `json:"source_id,omitempty"`
+	InboxID    int                         `json:"inbox_id"`
+	ContactID  int                         `json:"contact_id"`
 	Message    *ConversationInitialMessage `json:"message,omitempty"`
-	Status     *string          `json:"status,omitempty"`
-	AssigneeID *int             `json:"assignee_id,omitempty"`
-	TeamID     *int             `json:"team_id,omitempty"`
+	Status     *string                     `json:"status,omitempty"`
+	AssigneeID *int                        `json:"assignee_id,omitempty"`
+	TeamID     *int                        `json:"team_id,omitempty"`
 }
 
 // ConversationInitialMessage is the initial message when creating a conversation.
@@ -175,10 +182,10 @@ type ConversationFilterRequest struct {
 
 // ConversationFilterPayload describes a single filter condition.
 type ConversationFilterPayload struct {
-	AttributeKey   string   `json:"attribute_key"`
-	FilterOperator string   `json:"filter_operator"`
-	Values         []any    `json:"values"`
-	QueryOperator  *string  `json:"query_operator,omitempty"`
+	AttributeKey   string  `json:"attribute_key"`
+	FilterOperator string  `json:"filter_operator"`
+	Values         []any   `json:"values"`
+	QueryOperator  *string `json:"query_operator,omitempty"`
 }
 
 // ConversationMetaResponse is the response containing conversation counts per status.
@@ -194,16 +201,27 @@ type ConversationStatusCounts struct {
 	AllCount        int `json:"all_count"`
 }
 
-// UpdateConversationRequest is the payload for updating conversation custom attributes.
+// UpdateConversationRequest is the payload for PATCH /conversations/{id}.
+// Chatwoot only permits `priority` on this endpoint; custom attributes must go
+// through UpdateConversationCustomAttributes.
 type UpdateConversationRequest struct {
-	Priority         *string        `json:"priority,omitempty"`
-	SLAPolicyID      *int           `json:"sla_policy_id,omitempty"`
-	CustomAttributes map[string]any `json:"custom_attributes,omitempty"`
+	Priority *string `json:"priority,omitempty"`
+}
+
+// ConversationCustomAttributesRequest is the payload for POST /conversations/{id}/custom_attributes.
+type ConversationCustomAttributesRequest struct {
+	CustomAttributes map[string]any `json:"custom_attributes"`
+}
+
+// ConversationCustomAttributesResponse is the response from the custom_attributes endpoint.
+type ConversationCustomAttributesResponse struct {
+	CustomAttributes map[string]any `json:"custom_attributes"`
 }
 
 // TogglePriorityRequest is the payload for setting conversation priority.
+// A nil Priority clears the priority (Chatwoot rejects the literal string "none").
 type TogglePriorityRequest struct {
-	Priority string `json:"priority"`
+	Priority *string `json:"priority"`
 }
 
 // ToggleStatusRequest is the payload for toggling conversation status.
@@ -212,9 +230,12 @@ type ToggleStatusRequest struct {
 	SnoozedUntil *int64 `json:"snoozed_until,omitempty"`
 }
 
-// AssignConversationRequest is the payload for assigning a conversation.
+// AssignConversationRequest describes an assignment change.
+// Chatwoot handles only one of assignee_id / team_id per request (assignee wins
+// when both keys are present, even if assignee_id is null), so the client sends
+// separate requests and only includes the keys that were provided.
 type AssignConversationRequest struct {
-	AssigneeID *int `json:"assignee_id"`
+	AssigneeID *int `json:"assignee_id,omitempty"`
 	TeamID     *int `json:"team_id,omitempty"`
 }
 
@@ -243,8 +264,20 @@ type Message struct {
 	SenderType        *string         `json:"sender_type"`
 	SenderID          *int            `json:"sender_id"`
 	SourceID          *string         `json:"source_id"`
+	Attachments       []Attachment    `json:"attachments"`
 	CreatedAt         int64           `json:"created_at"`
-	UpdatedAt         string          `json:"updated_at"`
+}
+
+// Attachment represents a file attached to a message.
+type Attachment struct {
+	ID            int    `json:"id"`
+	MessageID     int    `json:"message_id"`
+	FileType      string `json:"file_type"`
+	Extension     string `json:"extension"`
+	DataURL       string `json:"data_url"`
+	ThumbURL      string `json:"thumb_url"`
+	FileSize      int64  `json:"file_size"`
+	FallbackTitle string `json:"fallback_title"`
 }
 
 // Sender represents who sent a message.
@@ -340,10 +373,10 @@ type ContactFilterRequest struct {
 
 // ContactFilterPayload describes a single filter condition for contacts.
 type ContactFilterPayload struct {
-	AttributeKey   string   `json:"attribute_key"`
-	FilterOperator string   `json:"filter_operator"`
-	Values         []any    `json:"values"`
-	QueryOperator  *string  `json:"query_operator,omitempty"`
+	AttributeKey   string  `json:"attribute_key"`
+	FilterOperator string  `json:"filter_operator"`
+	Values         []any   `json:"values"`
+	QueryOperator  *string `json:"query_operator,omitempty"`
 }
 
 // ContactConversationsResponse is the response listing conversations for a contact.
@@ -449,21 +482,54 @@ type UpdateCannedResponseRequest struct {
 // Custom Attributes
 // ---------------------------------------------------------------------------
 
+// AttributeModel is the model a custom attribute belongs to. Chatwoot returns
+// it as an enum string ("conversation_attribute" / "contact_attribute") but
+// older builds emitted the integer (0 / 1); both are accepted.
+type AttributeModel string
+
+const (
+	AttributeModelConversation AttributeModel = "conversation_attribute"
+	AttributeModelContact      AttributeModel = "contact_attribute"
+)
+
+func (m *AttributeModel) UnmarshalJSON(data []byte) error {
+	s := string(data)
+	switch s {
+	case "null":
+		*m = ""
+		return nil
+	case "0":
+		*m = AttributeModelConversation
+		return nil
+	case "1":
+		*m = AttributeModelContact
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return fmt.Errorf("AttributeModel: cannot parse %s", s)
+	}
+	*m = AttributeModel(str)
+	return nil
+}
+
+// IsContact reports whether the attribute applies to contacts (vs conversations).
+func (m AttributeModel) IsContact() bool { return m == AttributeModelContact }
+
 // CustomAttributeDefinition represents a custom attribute definition.
-// AttributeModel: 0 = conversation_attribute, 1 = contact_attribute.
 type CustomAttributeDefinition struct {
-	ID                   int      `json:"id"`
-	AttributeDisplayName string   `json:"attribute_display_name"`
-	AttributeDisplayType string   `json:"attribute_display_type"`
-	AttributeDescription string   `json:"attribute_description"`
-	AttributeKey         string   `json:"attribute_key"`
-	AttributeModel       any      `json:"attribute_model"`
-	AttributeValues      []string `json:"attribute_values"`
-	RegexPattern         string   `json:"regex_pattern"`
-	RegexCue             string   `json:"regex_cue"`
-	DefaultValue         string   `json:"default_value"`
-	CreatedAt            string   `json:"created_at"`
-	UpdatedAt            string   `json:"updated_at"`
+	ID                   int            `json:"id"`
+	AttributeDisplayName string         `json:"attribute_display_name"`
+	AttributeDisplayType string         `json:"attribute_display_type"`
+	AttributeDescription string         `json:"attribute_description"`
+	AttributeKey         string         `json:"attribute_key"`
+	AttributeModel       AttributeModel `json:"attribute_model"`
+	AttributeValues      []string       `json:"attribute_values"`
+	RegexPattern         string         `json:"regex_pattern"`
+	RegexCue             string         `json:"regex_cue"`
+	DefaultValue         string         `json:"default_value"`
+	CreatedAt            string         `json:"created_at"`
+	UpdatedAt            string         `json:"updated_at"`
 }
 
 // CreateCustomAttributeRequest is the payload for creating a custom attribute definition.
@@ -484,16 +550,16 @@ type CreateCustomAttributeRequest struct {
 
 // CustomFilter represents a saved custom filter.
 type CustomFilter struct {
-	ID         int              `json:"id"`
-	Name       string           `json:"name"`
-	FilterType string           `json:"type"`
-	Query      json.RawMessage  `json:"query"`
+	ID         int             `json:"id"`
+	Name       string          `json:"name"`
+	FilterType string          `json:"filter_type"`
+	Query      json.RawMessage `json:"query"`
 }
 
 // CreateCustomFilterRequest is the payload for creating a custom filter.
 type CreateCustomFilterRequest struct {
 	Name       string          `json:"name"`
-	FilterType string          `json:"type"`
+	FilterType string          `json:"filter_type"`
 	Query      json.RawMessage `json:"query"`
 }
 
@@ -503,14 +569,14 @@ type CreateCustomFilterRequest struct {
 
 // AutomationRule represents an automation rule.
 type AutomationRule struct {
-	ID          int              `json:"id"`
-	Name        string           `json:"name"`
-	Description string           `json:"description"`
-	EventName   string           `json:"event_name"`
-	Conditions  json.RawMessage  `json:"conditions"`
-	Actions     json.RawMessage  `json:"actions"`
-	Active      bool             `json:"active"`
-	CreatedAt   FlexTime         `json:"created_on"`
+	ID          int             `json:"id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	EventName   string          `json:"event_name"`
+	Conditions  json.RawMessage `json:"conditions"`
+	Actions     json.RawMessage `json:"actions"`
+	Active      bool            `json:"active"`
+	CreatedAt   FlexTime        `json:"created_on"`
 }
 
 // CreateAutomationRuleRequest is the payload for creating an automation rule.
@@ -530,18 +596,37 @@ type CreateAutomationRuleRequest struct {
 // Webhook represents a configured webhook.
 type Webhook struct {
 	ID            int      `json:"id"`
+	Name          string   `json:"name"`
 	URL           string   `json:"url"`
+	AccountID     int      `json:"account_id"`
 	Subscriptions []string `json:"subscriptions"`
 }
 
-// CreateWebhookRequest is the payload for creating a webhook.
+// WebhookListResponse is the response from list webhooks: {"payload": {"webhooks": [...]}}.
+type WebhookListResponse struct {
+	Payload struct {
+		Webhooks []Webhook `json:"webhooks"`
+	} `json:"payload"`
+}
+
+// WebhookResponse is the response from create/update webhook: {"payload": {"webhook": {...}}}.
+type WebhookResponse struct {
+	Payload struct {
+		Webhook Webhook `json:"webhook"`
+	} `json:"payload"`
+}
+
+// CreateWebhookRequest is the payload for creating a webhook (sent wrapped as {"webhook": ...}).
 type CreateWebhookRequest struct {
+	Name          string   `json:"name,omitempty"`
 	URL           string   `json:"url"`
+	InboxID       *int     `json:"inbox_id,omitempty"`
 	Subscriptions []string `json:"subscriptions,omitempty"`
 }
 
-// UpdateWebhookRequest is the payload for updating a webhook.
+// UpdateWebhookRequest is the payload for updating a webhook (sent wrapped as {"webhook": ...}).
 type UpdateWebhookRequest struct {
+	Name          *string  `json:"name,omitempty"`
 	URL           *string  `json:"url,omitempty"`
 	Subscriptions []string `json:"subscriptions,omitempty"`
 }
@@ -551,14 +636,15 @@ type UpdateWebhookRequest struct {
 // ---------------------------------------------------------------------------
 
 // ReportSummary contains aggregate metrics for a report.
+// Average times are seconds; Chatwoot returns them as JSON numbers (or null).
 type ReportSummary struct {
-	ConversationsCount    int      `json:"conversations_count"`
-	IncomingMessagesCount int      `json:"incoming_messages_count"`
-	OutgoingMessagesCount int      `json:"outgoing_messages_count"`
-	AvgFirstResponseTime  *string `json:"avg_first_response_time"`
-	AvgResolutionTime     *string `json:"avg_resolution_time"`
-	ResolutionsCount      int      `json:"resolutions_count"`
-	AvgReplyTime          *string `json:"avg_reply_time"`
+	ConversationsCount    int                    `json:"conversations_count"`
+	IncomingMessagesCount int                    `json:"incoming_messages_count"`
+	OutgoingMessagesCount int                    `json:"outgoing_messages_count"`
+	AvgFirstResponseTime  *float64               `json:"avg_first_response_time"`
+	AvgResolutionTime     *float64               `json:"avg_resolution_time"`
+	ResolutionsCount      int                    `json:"resolutions_count"`
+	AvgReplyTime          *float64               `json:"reply_time"`
 	Previous              *ReportSummaryPrevious `json:"previous,omitempty"`
 }
 
@@ -567,30 +653,32 @@ type ReportSummaryPrevious struct {
 	ConversationsCount    int      `json:"conversations_count"`
 	IncomingMessagesCount int      `json:"incoming_messages_count"`
 	OutgoingMessagesCount int      `json:"outgoing_messages_count"`
-	AvgFirstResponseTime  *string `json:"avg_first_response_time"`
-	AvgResolutionTime     *string `json:"avg_resolution_time"`
+	AvgFirstResponseTime  *float64 `json:"avg_first_response_time"`
+	AvgResolutionTime     *float64 `json:"avg_resolution_time"`
 	ResolutionsCount      int      `json:"resolutions_count"`
-	AvgReplyTime          *string `json:"avg_reply_time"`
+	AvgReplyTime          *float64 `json:"reply_time"`
 }
 
 // SummaryReportEntry contains report metrics for an agent, inbox, or team.
+// Average times are seconds; Chatwoot returns them as JSON numbers (or null).
 type SummaryReportEntry struct {
-	ID                         int     `json:"id"`
-	ConversationsCount         int     `json:"conversations_count"`
-	ResolvedConversationsCount int     `json:"resolved_conversations_count"`
-	AvgResolutionTime          *string `json:"avg_resolution_time"`
-	AvgFirstResponseTime       *string `json:"avg_first_response_time"`
-	AvgReplyTime               *string `json:"avg_reply_time"`
+	ID                         int      `json:"id"`
+	ConversationsCount         int      `json:"conversations_count"`
+	ResolvedConversationsCount int      `json:"resolved_conversations_count"`
+	AvgResolutionTime          *float64 `json:"avg_resolution_time"`
+	AvgFirstResponseTime       *float64 `json:"avg_first_response_time"`
+	AvgReplyTime               *float64 `json:"avg_reply_time"`
 }
 
-// ChannelSummary contains report metrics grouped by channel type.
+// ChannelSummary contains conversation counts by status for one channel type.
+// The channel summary endpoint returns a map keyed by channel type
+// (e.g. "Channel::Email") whose values have this shape.
 type ChannelSummary struct {
-	ChannelType                string  `json:"channel_type"`
-	ConversationsCount         int     `json:"conversations_count"`
-	ResolvedConversationsCount int     `json:"resolved_conversations_count"`
-	AvgResolutionTime          *string `json:"avg_resolution_time"`
-	AvgFirstResponseTime       *string `json:"avg_first_response_time"`
-	AvgReplyTime               *string `json:"avg_reply_time"`
+	Open     int `json:"open"`
+	Resolved int `json:"resolved"`
+	Pending  int `json:"pending"`
+	Snoozed  int `json:"snoozed"`
+	Total    int `json:"total"`
 }
 
 // ---------------------------------------------------------------------------
@@ -660,20 +748,36 @@ type Portal struct {
 
 // Article represents a help center article.
 type Article struct {
-	ID                  int             `json:"id"`
-	Title               string          `json:"title"`
-	Content             *string         `json:"content"`
-	Slug                string          `json:"slug"`
-	Status              string          `json:"status"`
-	Position            int             `json:"position"`
-	Views               int             `json:"views"`
-	AccountID           int             `json:"account_id"`
-	PortalID            int             `json:"portal_id"`
-	CategoryID          *int            `json:"category_id"`
-	FolderID            *int            `json:"folder_id"`
-	AuthorID            *int            `json:"author_id"`
-	AssociatedArticleID *int            `json:"associated_article_id"`
-	Meta                json.RawMessage `json:"meta"`
+	ID          int              `json:"id"`
+	Title       string           `json:"title"`
+	Content     *string          `json:"content"`
+	Description *string          `json:"description"`
+	Slug        string           `json:"slug"`
+	Status      string           `json:"status"`
+	Position    int              `json:"position"`
+	Views       int              `json:"views"`
+	AccountID   int              `json:"account_id"`
+	Category    *ArticleCategory `json:"category"`
+	Author      *MetaAgent       `json:"author"`
+	Meta        json.RawMessage  `json:"meta"`
+}
+
+// ArticleCategory is the category reference embedded in an article.
+type ArticleCategory struct {
+	ID     *int    `json:"id"`
+	Name   *string `json:"name"`
+	Slug   *string `json:"slug"`
+	Locale *string `json:"locale"`
+}
+
+// ArticleResponse wraps a single article: {"payload": {...}}.
+type ArticleResponse struct {
+	Payload Article `json:"payload"`
+}
+
+// CategoryResponse wraps a single category: {"payload": {...}}.
+type CategoryResponse struct {
+	Payload Category `json:"payload"`
 }
 
 // ---------------------------------------------------------------------------
@@ -687,8 +791,8 @@ type Category struct {
 	Slug        string `json:"slug"`
 	Description string `json:"description"`
 	Locale      string `json:"locale"`
-	PortalID    int    `json:"portal_id"`
 	Position    int    `json:"position"`
+	AccountID   int    `json:"account_id"`
 }
 
 // CreateArticleRequest is the payload for creating an article.
@@ -723,7 +827,7 @@ type CreateCategoryRequest struct {
 	Description string `json:"description,omitempty"`
 	Locale      string `json:"locale,omitempty"`
 	Position    *int   `json:"position,omitempty"`
-	ParentID    *int   `json:"parent_id,omitempty"`
+	ParentID    *int   `json:"parent_category_id,omitempty"`
 }
 
 // UpdateCategoryRequest is the payload for updating a category.
@@ -740,10 +844,10 @@ type UpdateCategoryRequest struct {
 
 // Notification represents a Chatwoot notification.
 type Notification struct {
-	ID               int        `json:"id"`
-	NotificationType string     `json:"notification_type"`
-	PrimaryActorType string     `json:"primary_actor_type"`
-	PrimaryActorID   int        `json:"primary_actor_id"`
+	ID               int      `json:"id"`
+	NotificationType string   `json:"notification_type"`
+	PrimaryActorType string   `json:"primary_actor_type"`
+	PrimaryActorID   int      `json:"primary_actor_id"`
 	ReadAt           FlexTime `json:"read_at"`
 	CreatedAt        FlexTime `json:"created_at"`
 }
@@ -753,26 +857,28 @@ type Notification struct {
 // ---------------------------------------------------------------------------
 
 // Account represents a Chatwoot account.
+// Auto-resolve configuration lives under Settings (auto_resolve_after in minutes,
+// auto_resolve_message, auto_resolve_ignore_waiting).
 type Account struct {
-	ID               int            `json:"id"`
-	Name             string         `json:"name"`
-	Locale           string         `json:"locale"`
-	Domain           string         `json:"domain"`
-	SupportEmail     string         `json:"support_email"`
-	AutoResolveDays  int            `json:"auto_resolve_duration"`
-	Status           string         `json:"status"`
-	CreatedAt        string         `json:"created_at"`
+	ID               int             `json:"id"`
+	Name             string          `json:"name"`
+	Locale           string          `json:"locale"`
+	Domain           string          `json:"domain"`
+	SupportEmail     string          `json:"support_email"`
+	Status           string          `json:"status"`
+	CreatedAt        string          `json:"created_at"`
 	Features         json.RawMessage `json:"features"`
-	CustomAttributes map[string]any `json:"custom_attributes"`
+	Settings         map[string]any  `json:"settings"`
+	CustomAttributes map[string]any  `json:"custom_attributes"`
 }
 
 // UpdateAccountRequest is the payload for updating an account.
 type UpdateAccountRequest struct {
-	Name            *string `json:"name,omitempty"`
-	Locale          *string `json:"locale,omitempty"`
-	Domain          *string `json:"domain,omitempty"`
-	SupportEmail    *string `json:"support_email,omitempty"`
-	AutoResolveDays *int    `json:"auto_resolve_duration,omitempty"`
+	Name             *string `json:"name,omitempty"`
+	Locale           *string `json:"locale,omitempty"`
+	Domain           *string `json:"domain,omitempty"`
+	SupportEmail     *string `json:"support_email,omitempty"`
+	AutoResolveAfter *int    `json:"auto_resolve_after,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
