@@ -159,6 +159,21 @@ Or manually add to your `.mcp.json` (project-level) or `~/.claude/settings.json`
 | `CHATWOOT_URL` | Yes | Your Chatwoot instance URL |
 | `CHATWOOT_API_TOKEN` | Yes | API access token from Profile Settings |
 | `CHATWOOT_ACCOUNT_ID` | Yes | Your Chatwoot account ID |
+| `MCP_TRANSPORT` | No | Transport: `stdio` (default) or `http` |
+| `MCP_HOST` | No | HTTP listener host (default `127.0.0.1`; loopback addresses only) |
+| `MCP_PORT` | No | HTTP listener port (default `3000`) |
+
+### Shared HTTP daemon
+
+By default the binary keeps the existing stdio behavior. To share one process between
+multiple MCP clients, opt into Streamable HTTP:
+
+```bash
+MCP_TRANSPORT=http MCP_HOST=127.0.0.1 MCP_PORT=3000 chatwoot-mcp
+```
+
+Connect clients to `http://127.0.0.1:3000/mcp`. The listener rejects non-loopback bind
+addresses, and the Go MCP SDK rejects foreign `Host` headers on loopback connections.
 
 ## Usage Examples
 
