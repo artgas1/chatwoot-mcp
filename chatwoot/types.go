@@ -395,6 +395,9 @@ type MergeContactsRequest struct {
 // ---------------------------------------------------------------------------
 
 // Inbox represents a Chatwoot inbox.
+//
+// There is deliberately no "enabled" field: the Chatwoot CE inbox API does not return
+// one, so a bool would always decode to false and read as "disabled" (INFRA-1340).
 type Inbox struct {
 	ID                  int    `json:"id"`
 	Name                string `json:"name"`
@@ -402,7 +405,6 @@ type Inbox struct {
 	AvatarURL           string `json:"avatar_url"`
 	WebsiteURL          string `json:"website_url"`
 	WidgetColor         string `json:"widget_color"`
-	Enabled             bool   `json:"enabled"`
 	GreetingEnabled     bool   `json:"greeting_enabled"`
 	WorkingHoursEnabled bool   `json:"working_hours_enabled"`
 }

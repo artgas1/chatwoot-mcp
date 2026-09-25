@@ -53,11 +53,11 @@ func RegisterAccountTools(server *mcp.Server, client *chatwoot.Client) {
 		}
 		var sb strings.Builder
 		for _, inbox := range inboxes {
-			status := "enabled"
-			if !inbox.Enabled {
-				status = "disabled"
+			line := fmt.Sprintf("- [%d] %s (%s)", inbox.ID, inbox.Name, inbox.ChannelType)
+			if inbox.WorkingHoursEnabled {
+				line += " — working hours on"
 			}
-			sb.WriteString(fmt.Sprintf("- [%d] %s (%s) — %s\n", inbox.ID, inbox.Name, inbox.ChannelType, status))
+			sb.WriteString(line + "\n")
 		}
 		if sb.Len() == 0 {
 			sb.WriteString("No inboxes found.")
